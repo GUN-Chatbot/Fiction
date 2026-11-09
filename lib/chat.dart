@@ -10,7 +10,7 @@ void main() async {
     url:     'https://mfrebebywfirzevxsqhg.supabase.co',
     anonKey: 'sb_publishable_sXkpTYMd1MT_nQ2XYdrqRQ_YqfYZ9lG',
   );
-
+// kuy gun
   runApp(
     ChangeNotifierProvider(
       create: (context) => ChatProvider(),
