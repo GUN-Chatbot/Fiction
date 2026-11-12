@@ -194,8 +194,11 @@ class _FanficPageState extends State<FanficPage> {
   bool _loading = true;
   String? _error;
   String _selectedGenre = 'ทั้งหมด';
+  RealtimeChannel? _novelsChannel;
+  Timer? _novelsReloadTimer;
+  int _loadGeneration = 0;
 
-  static const List<String> _baseGenres = ['ทั้งหมด','โรแมนติก','แฟนตาซี','แอคชัน','สยองขวัญ','ตลก','ดราม่า','ระทึกขวัญ','ผจญภัย'];
+  static const List<String> _baseGenres = ['ทั้งหมด','โรแมนติก','แฟนตาซี','แอคชัน','สยองขวัญ','ตลก','ดราม่า','ระทึกขวัญ','ผจญภัย','อื่นๆ'];
 
   List<String> get _sortedGenres {
     final withNovels = _baseGenres.where((g) => g == 'ทั้งหมด' || _novels.any((n) => n.genre == g)).toList();
@@ -204,9 +207,45 @@ class _FanficPageState extends State<FanficPage> {
   }
 
   @override
-  void initState() { super.initState(); _loadNovels(); }
+  void initState() {
+    super.initState();
+    _loadNovels();
+    _subscribeToNovels();
+  }
 
-  Future<void> _loadNovels() async {
+  void _subscribeToNovels() {
+    _novelsChannel = Supabase.instance.client
+        .channel('novels_list_realtime')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'novels',
+          callback: (_) {
+            _novelsReloadTimer?.cancel();
+            _novelsReloadTimer = Timer(
+              const Duration(milliseconds: 300),
+              () => _loadNovels(showSpinner: false),
+            );
+          },
+        )
+        .subscribe();
+  }
+
+  @override
+  void dispose() {
+    _novelsReloadTimer?.cancel();
+    _novelsChannel?.unsubscribe();
+    super.dispose();
+  }
+
+  Future<void> _loadNovels({bool showSpinner = true}) async {
+    final generation = ++_loadGeneration;
+    if (showSpinner && mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       final sb = Supabase.instance.client;
       final novelsRes = await sb.from('novels').select().order('views', ascending: false);
@@ -216,9 +255,21 @@ class _FanficPageState extends State<FanficPage> {
         final likesRes = await sb.from('novel_likes').select().eq('novel_id', row['id']);
         loaded.add(NovelModel.fromSupabase(row, commentsRes as List, (likesRes as List).length));
       }
-      if (mounted) setState(() { _novels = loaded; _loading = false; });
+      if (mounted && generation == _loadGeneration) {
+        setState(() {
+          _novels = loaded;
+          _loading = false;
+          _error = null;
+        });
+      }
     } catch (e) {
-      if (mounted) setState(() { _error = e.toString(); _loading = false; });
+      debugPrint('Load novels failed: $e');
+      if (mounted && generation == _loadGeneration) {
+        setState(() {
+          if (showSpinner || _novels.isEmpty) _error = e.toString();
+          _loading = false;
+        });
+      }
     }
   }
 
@@ -251,110 +302,144 @@ class _FanficPageState extends State<FanficPage> {
     }
 
     final novels = _filteredNovels;
-    return Column(children: [
-      SizedBox(
-        height: 48,
-        child: ListView.separated(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          itemCount: _sortedGenres.length,
-          separatorBuilder: (_, __) => const SizedBox(width: 8),
-          itemBuilder: (context, i) {
-            final genre = _sortedGenres[i];
-            final isSelected = genre == _selectedGenre;
-            final hasNovels = genre == 'ทั้งหมด' || _novels.any((n) => n.genre == genre);
-            return GestureDetector(
-              onTap: hasNovels ? () => setState(() => _selectedGenre = genre) : () {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  behavior: SnackBarBehavior.floating, backgroundColor: _card,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: const BorderSide(color: _divider)),
-                  duration: const Duration(seconds: 2),
-                  content: Row(children: [
-                    const Icon(Icons.lock_outline_rounded, color: _textSub, size: 16), const SizedBox(width: 8),
-                    Text('หมวด "$genre" ยังไม่มีนิยาย', style: const TextStyle(color: _textSub, fontSize: 13)),
-                  ]),
-                ));
-              },
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                decoration: BoxDecoration(
-                  color: isSelected ? _accent : _card, borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: isSelected ? _accent : _divider, width: isSelected ? 1.5 : 1.0),
-                  boxShadow: isSelected ? [BoxShadow(color: _accent.withOpacity(0.35), blurRadius: 8, offset: const Offset(0, 2))] : [],
-                ),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  if (!hasNovels) ...[const Icon(Icons.lock_outline_rounded, size: 11, color: _textSub), const SizedBox(width: 4)],
-                  Text(genre, style: TextStyle(color: isSelected ? _bg : _textSub, fontSize: 12, fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500, letterSpacing: 0)),
-                ]),
-              ),
-            );
-          },
+    return RefreshIndicator(
+      color: _accent,
+      backgroundColor: _card,
+      onRefresh: () => _loadNovels(showSpinner: false),
+      child: Container(
+      color: _bg,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
         ),
-      ),
-      const Divider(height: 1, color: _divider),
-      Expanded(
-        child: novels.isEmpty
-            ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-                const Icon(Icons.menu_book_outlined, color: _textSub, size: 40), const SizedBox(height: 12),
-                Text('ไม่มีนิยายในหมวด "$_selectedGenre"', style: const TextStyle(color: _textSub, fontSize: 14)),
-              ]))
-            : ListView.separated(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-                itemCount: novels.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 16),
-                itemBuilder: (context, index) {
-                  final novel = novels[index];
-                  final coverColor = Color(int.parse('FF${novel.coverColor}', radix: 16));
-                  final hasImage = novel.coverImage != null && novel.coverImage!.isNotEmpty;
-                  return GestureDetector(
-                    onTap: () async {
-                      await Navigator.push(context, MaterialPageRoute(builder: (_) => DetailPage(novel: novel)));
-                      if (mounted) _refreshNovelStats(novel.id);
-                    },
-                    child: Container(
-                      height: 130,
-                      decoration: BoxDecoration(
-                        color: _card, borderRadius: BorderRadius.circular(16), border: Border.all(color: _divider),
-                        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.35), blurRadius: 12, offset: const Offset(0, 4))],
-                      ),
-                      child: Row(children: [
-                        ClipRRect(
-                          borderRadius: const BorderRadius.horizontal(left: Radius.circular(16)),
-                          child: SizedBox(width: 90, child: hasImage
-                              ? Image.network(novel.coverImage!, fit: BoxFit.cover, height: double.infinity,
-                                  errorBuilder: (_, __, ___) => _CoverPlaceholder(color: coverColor, letter: novel.title.substring(0, 1)))
-                              : _CoverPlaceholder(color: coverColor, letter: novel.title.substring(0, 1))),
-                        ),
-                        Expanded(child: Padding(
-                          padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
-                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                              decoration: BoxDecoration(color: _accentSoft, borderRadius: BorderRadius.circular(6)),
-                              child: Text(novel.genre, style: const TextStyle(color: _accent, fontSize: 10, fontWeight: FontWeight.w600, letterSpacing: 0)),
-                            ),
-                            Text(novel.title, maxLines: 2, overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(color: _textPrim, fontSize: 15, fontWeight: FontWeight.w700, height: 1.3)),
-                            Row(children: [
-                              const Icon(Icons.person_outline_rounded, color: _textSub, size: 13), const SizedBox(width: 4),
-                              Expanded(child: Text(novel.author, overflow: TextOverflow.ellipsis, style: const TextStyle(color: _textSub, fontSize: 12))),
-                              const Icon(Icons.remove_red_eye_outlined, color: _textSub, size: 13), const SizedBox(width: 4),
-                              Text(_fmt(novel.views), style: const TextStyle(color: _textSub, fontSize: 12)),
-                              const SizedBox(width: 10),
-                              const Icon(Icons.favorite_rounded, color: _heart, size: 13), const SizedBox(width: 4),
-                              Text(_fmt(novel.likes), style: const TextStyle(color: _textSub, fontSize: 12)),
-                            ]),
-                          ]),
-                        )),
-                        const Padding(padding: EdgeInsets.only(right: 12), child: Icon(Icons.chevron_right_rounded, color: _textSub, size: 20)),
-                      ]),
-                    ),
-                  );
+        SizedBox(
+          height: 42,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            itemCount: _sortedGenres.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 9),
+            itemBuilder: (context, i) {
+              final genre = _sortedGenres[i];
+              final isSelected = genre == _selectedGenre;
+              final hasNovels = genre == 'ทั้งหมด' || _novels.any((n) => n.genre == genre);
+              return GestureDetector(
+                onTap: hasNovels ? () => setState(() => _selectedGenre = genre) : () {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    behavior: SnackBarBehavior.floating, backgroundColor: _card,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14), side: const BorderSide(color: _divider)),
+                    duration: const Duration(seconds: 2),
+                    content: Row(children: [
+                      const Icon(Icons.lock_outline_rounded, color: _textSub, size: 16), const SizedBox(width: 8),
+                      Text('หมวด "$genre" ยังไม่มีนิยาย', style: const TextStyle(color: _textSub, fontSize: 13)),
+                    ]),
+                  ));
                 },
-              ),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                  decoration: BoxDecoration(
+                    color: isSelected ? _accent : _surface,
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(color: isSelected ? _accent : _divider),
+                    boxShadow: isSelected ? [BoxShadow(color: _accent.withOpacity(0.18), blurRadius: 12, offset: const Offset(0, 4))] : null,
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    if (!hasNovels) ...[const Icon(Icons.lock_outline_rounded, size: 11, color: _textSub), const SizedBox(width: 5)],
+                    Text(genre, style: TextStyle(color: isSelected ? _bg : _textSub, fontSize: 12, fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500)),
+                  ]),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 8),
+        Expanded(
+          child: novels.isEmpty
+              ? ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  children: [SizedBox(
+                    height: MediaQuery.sizeOf(context).height * 0.55,
+                    child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      Container(width: 68, height: 68, decoration: BoxDecoration(color: _card, borderRadius: BorderRadius.circular(22)), child: const Icon(Icons.menu_book_outlined, color: _accent, size: 30)),
+                      const SizedBox(height: 14),
+                      Text('ยังไม่มีเรื่องในหมวด $_selectedGenre', style: const TextStyle(color: _textPrim, fontSize: 15, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 5),
+                      const Text('ลองเลือกหมวดอื่นดูนะ', style: TextStyle(color: _textSub, fontSize: 13)),
+                    ])),
+                  ),],
+                )
+              : ListView.separated(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 30),
+                  itemCount: novels.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 13),
+                  itemBuilder: (context, index) {
+                    final novel = novels[index];
+                    final coverColor = Color(int.parse('FF${novel.coverColor}', radix: 16));
+                    final hasImage = novel.coverImage != null && novel.coverImage!.isNotEmpty;
+                    return Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(20),
+                        onTap: () async {
+                          await Navigator.push(context, MaterialPageRoute(builder: (_) => DetailPage(novel: novel)));
+                          if (mounted) _refreshNovelStats(novel.id);
+                        },
+                        child: Ink(
+                          height: 148,
+                          decoration: BoxDecoration(
+                            color: _surface, borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: _divider),
+                          ),
+                          child: Row(children: [
+                            Padding(
+                              padding: const EdgeInsets.all(10),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(13),
+                                child: SizedBox(width: 88, height: 128, child: hasImage
+                                    ? Image.network(novel.coverImage!, fit: BoxFit.cover,
+                                        errorBuilder: (_, __, ___) => _CoverPlaceholder(color: coverColor, letter: novel.title.isEmpty ? '?' : novel.title[0]))
+                                    : _CoverPlaceholder(color: coverColor, letter: novel.title.isEmpty ? '?' : novel.title[0])),
+                              ),
+                            ),
+                            Expanded(child: Padding(
+                              padding: const EdgeInsets.fromLTRB(5, 14, 14, 14),
+                              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                Row(children: [
+                                  Flexible(child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                                    decoration: BoxDecoration(color: _accentSoft, borderRadius: BorderRadius.circular(20)),
+                                    child: Text(novel.genre, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: _accent, fontSize: 10, fontWeight: FontWeight.w700)),
+                                  )),
+                                  const Spacer(),
+                                  const Icon(Icons.chevron_right_rounded, color: _textSub, size: 20),
+                                ]),
+                                const SizedBox(height: 9),
+                                Expanded(child: Text(novel.title, maxLines: 2, overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(color: _textPrim, fontSize: 16, fontWeight: FontWeight.w700, height: 1.25))),
+                                Row(children: [
+                                  const Icon(Icons.person_outline_rounded, color: _textSub, size: 14), const SizedBox(width: 4),
+                                  Expanded(child: Text(novel.author, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: _textSub, fontSize: 12))),
+                                  const SizedBox(width: 8),
+                                  const Icon(Icons.visibility_outlined, color: _textSub, size: 14), const SizedBox(width: 4),
+                                  Text(_fmt(novel.views), style: const TextStyle(color: _textSub, fontSize: 11)),
+                                  const SizedBox(width: 9),
+                                  const Icon(Icons.favorite_rounded, color: _heart, size: 13), const SizedBox(width: 4),
+                                  Text(_fmt(novel.likes), style: const TextStyle(color: _textSub, fontSize: 11)),
+                                ]),
+                              ]),
+                            )),
+                          ]),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ]),
       ),
-    ]);
+    );
   }
 }
 
@@ -371,6 +456,7 @@ class DetailPage extends StatefulWidget {
 class _DetailPageState extends State<DetailPage> with SingleTickerProviderStateMixin {
   late NovelModel _novel;
   bool _isLiked = false, _likeLoading = false;
+  RealtimeChannel? _likesChannel;
   late final AnimationController _heartCtrl;
   late final Animation<double> _heartScale;
 
@@ -384,12 +470,17 @@ class _DetailPageState extends State<DetailPage> with SingleTickerProviderStateM
       TweenSequenceItem(tween: Tween(begin: 1.35, end: 1.0), weight: 50),
     ]).animate(CurvedAnimation(parent: _heartCtrl, curve: Curves.easeInOut));
     _checkIfLiked();
+    _subscribeToLikes();
     _incrementViews();
     _reloadComments();
   }
 
   @override
-  void dispose() { _heartCtrl.dispose(); super.dispose(); }
+  void dispose() {
+    _likesChannel?.unsubscribe();
+    _heartCtrl.dispose();
+    super.dispose();
+  }
 
   String get _userId => Supabase.instance.client.auth.currentUser?.id ?? 'anonymous';
 
@@ -405,6 +496,42 @@ class _DetailPageState extends State<DetailPage> with SingleTickerProviderStateM
       final res = await Supabase.instance.client.from('novel_likes').select().eq('novel_id', _novel.id).eq('user_id', _userId).maybeSingle();
       if (mounted) setState(() => _isLiked = res != null);
     } catch (_) {}
+  }
+
+  void _subscribeToLikes() {
+    _likesChannel = Supabase.instance.client
+        .channel('novel_likes_detail_${_novel.id}')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'novel_likes',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'novel_id',
+            value: _novel.id,
+          ),
+          callback: (_) => _refreshLikes(),
+        )
+        .subscribe();
+  }
+
+  Future<void> _refreshLikes() async {
+    try {
+      final likes = await Supabase.instance.client
+          .from('novel_likes')
+          .select('user_id')
+          .eq('novel_id', _novel.id);
+      if (!mounted) return;
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      final rows = likes as List;
+      setState(() {
+        _novel = _novel.copyWith(likes: rows.length);
+        _isLiked = userId != null &&
+            rows.any((row) => row['user_id'] == userId);
+      });
+    } catch (e) {
+      debugPrint('Refresh novel likes failed: $e');
+    }
   }
 
   Future<void> _reloadComments() async {
@@ -740,18 +867,95 @@ class _ChatReadPageState extends State<ChatReadPage> {
   final _sb = Supabase.instance.client;
   int _index = 0;
   bool _finished = false, _animating = false, _isJapanese = false, _isTranslating = false;
+  bool _isNovelLiked = false, _novelLikeLoading = false;
+  int _novelLikeCount = 0;
   final Map<int, String> _jpTranslations = {};
   EpisodeModel? _nextEpisode;
+  RealtimeChannel? _novelLikesChannel;
   List<ChatLine> get _allLines => widget.episode.chatLines;
 
   @override
   void initState() {
     super.initState();
+    _novelLikeCount = widget.novel.likes;
+    _loadNovelLikes();
+    _subscribeToNovelLikes();
     WidgetsBinding.instance.addPostFrameCallback((_) { _initReading(); _checkNextEpisode(); });
   }
 
   @override
-  void dispose() { _scroll.dispose(); super.dispose(); }
+  void dispose() {
+    _novelLikesChannel?.unsubscribe();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _subscribeToNovelLikes() {
+    _novelLikesChannel = _sb
+        .channel('novel_likes_reader_${widget.novel.id}')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'novel_likes',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'novel_id',
+            value: widget.novel.id,
+          ),
+          callback: (_) => _loadNovelLikes(),
+        )
+        .subscribe();
+  }
+
+  Future<void> _loadNovelLikes() async {
+    try {
+      final rows = await _sb.from('novel_likes')
+          .select('user_id').eq('novel_id', widget.novel.id);
+      if (!mounted) return;
+      final userId = _sb.auth.currentUser?.id;
+      final likes = rows as List;
+      setState(() {
+        _novelLikeCount = likes.length;
+        _isNovelLiked = userId != null &&
+            likes.any((row) => row['user_id'] == userId);
+      });
+    } catch (e) {
+      debugPrint('Load reader novel likes failed: $e');
+    }
+  }
+
+  Future<void> _toggleNovelLike() async {
+    final userId = _sb.auth.currentUser?.id;
+    if (userId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('กรุณาเข้าสู่ระบบก่อนกดถูกใจ')),
+      );
+      return;
+    }
+    if (_novelLikeLoading) return;
+    setState(() => _novelLikeLoading = true);
+    try {
+      if (_isNovelLiked) {
+        await _sb.from('novel_likes').delete()
+            .eq('novel_id', widget.novel.id).eq('user_id', userId);
+      } else {
+        await _sb.from('novel_likes').insert({
+          'novel_id': widget.novel.id,
+          'user_id': userId,
+        });
+      }
+      await _loadNovelLikes();
+    } catch (e) {
+      debugPrint('Toggle reader novel like failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          _errSnack('เปลี่ยนสถานะถูกใจไม่สำเร็จ กรุณาลองอีกครั้ง'),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _novelLikeLoading = false);
+    }
+  }
 
   Future<void> _checkNextEpisode() async {
     try {
@@ -874,6 +1078,31 @@ class _ChatReadPageState extends State<ChatReadPage> {
           Text('ตอนที่ ${widget.episode.episodeNum}: ${widget.episode.title}', style: const TextStyle(color: _textSub, fontSize: 11, letterSpacing: 0)),
         ]),
         actions: [
+          IconButton(
+            tooltip: 'ถูกใจนิยาย',
+            onPressed: _novelLikeLoading ? null : _toggleNovelLike,
+            icon: _novelLikeLoading
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(color: _heart, strokeWidth: 2),
+                  )
+                : Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(
+                      _isNovelLiked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                      color: _isNovelLiked ? _heart : _textSub,
+                      size: 19,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      _novelLikeCount.toString(),
+                      style: TextStyle(
+                        color: _isNovelLiked ? _heart : _textSub,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ]),
+          ),
           if (_isTranslating) const Padding(padding: EdgeInsets.only(right: 12), child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(color: _accent, strokeWidth: 2))),
           Padding(padding: const EdgeInsets.only(right: 12), child: TextButton(
             onPressed: _toggleLanguage,

@@ -102,7 +102,7 @@ class _SplashPageState extends State<SplashPage>
 
                   // ── App name ───────────────────────────────────────────
                   const Text(
-                    'MY APP',          // ← เปลี่ยนชื่อแอปตรงนี้
+                    'FICFION',          // ← เปลี่ยนชื่อแอปตรงนี้
                     style: TextStyle(
                       color: _textPrim,
                       fontSize: 22,
