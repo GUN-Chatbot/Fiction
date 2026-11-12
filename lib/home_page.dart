@@ -42,6 +42,7 @@ class _HomePageState extends State<HomePage> {
 
   // ✅ สร้าง Key สำหรับหน้า Vocab
   Key _vocabKey = UniqueKey();
+  Key _fanficKey = UniqueKey();
 
   @override
   void initState() {
@@ -50,7 +51,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _onPublishSuccess() {
-    setState(() => _currentIndex = 1); // ไปหน้า Fanfic
+    setState(() {
+      _currentIndex = 1;
+      _fanficKey = UniqueKey();
+    });
   }
 
   Future<void> loadProfile() async {
@@ -270,10 +274,10 @@ class _HomePageState extends State<HomePage> {
         index: _currentIndex,
         children: [
           const _HomeScreen(),
-          const FanficPage(),
+          FanficPage(key: _fanficKey),
           VocabPage(key: _vocabKey), // ✅ เอา _vocabKey มาใส่ให้หน้านี้
           const FavoritesPage(),
-          WriteFicPage(onPublishSuccess: _onPublishSuccess),
+          WriteFicHubPage(onPublishSuccess: _onPublishSuccess),
         ],
       ),
       // ✅ 1. เพิ่มปุ่มลอย (Floating Action Button) ตรงนี้ครับ!
@@ -389,7 +393,7 @@ class _HomeScreenState extends State<_HomeScreen> {
   bool _loadingFeatured = true;
 
   // ✅ เปลี่ยนเป็นเก็บ List ของข้อมูลนิยายแทน เพื่อเอาทั้งรูปและข้อมูลไปใช้ตอนกดคลิก
-  List<Map<String, dynamic>> _carouselNovels = []; 
+  List<Map<String, dynamic>> _carouselNovels = [];
   bool _loadingCarousel = true;
 
   @override
@@ -420,7 +424,9 @@ class _HomeScreenState extends State<_HomeScreen> {
         list.shuffle(Random()); // สับไพ่แบบสุ่มมั่วๆ
         if (mounted) {
           setState(() {
-            _carouselNovels = list.take(5).toList(); // เอามาแค่ 5 เรื่องพอให้สไลด์สวยๆ
+            _carouselNovels = list
+                .take(5)
+                .toList(); // เอามาแค่ 5 เรื่องพอให้สไลด์สวยๆ
             _loadingCarousel = false;
           });
         }
@@ -441,7 +447,7 @@ class _HomeScreenState extends State<_HomeScreen> {
           .from('novels')
           .select('id, title, author, genre, cover_image, cover_color, views')
           .order('views', ascending: false)
-          .limit(10); 
+          .limit(10);
 
       // 2. โหลดข้อมูลยอดคนกดใจทั้งหมด
       final likesData = await supabase.from('novel_likes').select('novel_id');
@@ -459,7 +465,7 @@ class _HomeScreenState extends State<_HomeScreen> {
         final novelId = row['id'] as String;
         allNovels.add({
           ...Map<String, dynamic>.from(row),
-          'like_count': likeCounts[novelId] ?? 0, 
+          'like_count': likeCounts[novelId] ?? 0,
         });
       }
 
@@ -547,19 +553,19 @@ class _HomeScreenState extends State<_HomeScreen> {
         try {
           final epId = prog['episode_id'] as String;
           final novelId = prog['novel_id'] as String;
-          
+
           final epRow = await supabase
               .from('episodes')
               .select('id, episode_num, title, novel_id')
               .eq('id', epId)
               .single();
-              
+
           final novelRow = await supabase
               .from('novels')
               .select('id, title, cover_image')
               .eq('id', novelId)
               .single();
-              
+
           result.add({
             'line_index': prog['line_index'],
             'total_lines': prog['total_lines'],
@@ -620,9 +626,20 @@ class _HomeScreenState extends State<_HomeScreen> {
     if (novelId == null || episodeId == null) return;
 
     try {
-      final row = await supabase.from('novels').select().eq('id', novelId).single();
-      final commentsRes = await supabase.from('comments').select().eq('novel_id', novelId).order('created_at', ascending: false);
-      final likesRes = await supabase.from('novel_likes').select().eq('novel_id', novelId);
+      final row = await supabase
+          .from('novels')
+          .select()
+          .eq('id', novelId)
+          .single();
+      final commentsRes = await supabase
+          .from('comments')
+          .select()
+          .eq('novel_id', novelId)
+          .order('created_at', ascending: false);
+      final likesRes = await supabase
+          .from('novel_likes')
+          .select()
+          .eq('novel_id', novelId);
 
       final novel = NovelModel.fromSupabase(
         row,
@@ -630,8 +647,16 @@ class _HomeScreenState extends State<_HomeScreen> {
         (likesRes as List).length,
       );
 
-      final epRow = await supabase.from('episodes').select().eq('id', episodeId).single();
-      final lineRows = await supabase.from('chat_lines').select().eq('episode_id', episodeId).order('order_num', ascending: true);
+      final epRow = await supabase
+          .from('episodes')
+          .select()
+          .eq('id', episodeId)
+          .single();
+      final lineRows = await supabase
+          .from('chat_lines')
+          .select()
+          .eq('episode_id', episodeId)
+          .order('order_num', ascending: true);
       final episode = EpisodeModel.fromSupabase(epRow, lineRows as List);
 
       final savedIdx = item['line_index'] as int? ?? 0;
@@ -652,7 +677,10 @@ class _HomeScreenState extends State<_HomeScreen> {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('โหลดไม่สำเร็จ: $e', style: const TextStyle(color: _textPrim)),
+          content: Text(
+            'โหลดไม่สำเร็จ: $e',
+            style: const TextStyle(color: _textPrim),
+          ),
           backgroundColor: _card,
           behavior: SnackBarBehavior.floating,
         ),
@@ -663,9 +691,20 @@ class _HomeScreenState extends State<_HomeScreen> {
   // ✅ ฟังก์ชันช่วยเปิดหน้านิยายจาก Carousel
   Future<void> _openNovelFromId(String novelId) async {
     try {
-      final row = await supabase.from('novels').select().eq('id', novelId).single();
-      final commentsRes = await supabase.from('comments').select().eq('novel_id', novelId).order('created_at', ascending: false);
-      final likesRes = await supabase.from('novel_likes').select().eq('novel_id', novelId);
+      final row = await supabase
+          .from('novels')
+          .select()
+          .eq('id', novelId)
+          .single();
+      final commentsRes = await supabase
+          .from('comments')
+          .select()
+          .eq('novel_id', novelId)
+          .order('created_at', ascending: false);
+      final likesRes = await supabase
+          .from('novel_likes')
+          .select()
+          .eq('novel_id', novelId);
 
       final novelModel = NovelModel.fromSupabase(
         row,
@@ -683,7 +722,10 @@ class _HomeScreenState extends State<_HomeScreen> {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('ไม่สามารถเปิดนิยายได้: $e', style: const TextStyle(color: _textPrim)),
+          content: Text(
+            'ไม่สามารถเปิดนิยายได้: $e',
+            style: const TextStyle(color: _textPrim),
+          ),
           backgroundColor: _card,
         ),
       );
@@ -734,7 +776,10 @@ class _HomeScreenState extends State<_HomeScreen> {
                     gradient: LinearGradient(
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
-                      colors: [Colors.transparent, Colors.black.withOpacity(0.6)],
+                      colors: [
+                        Colors.transparent,
+                        Colors.black.withOpacity(0.6),
+                      ],
                       stops: const [0.6, 1.0],
                     ),
                   ),

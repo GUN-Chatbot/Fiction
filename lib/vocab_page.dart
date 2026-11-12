@@ -68,19 +68,41 @@ class _VocabPageState extends State<VocabPage> {
   String? _error;
   String _selectedCategory = 'ทั้งหมด';
   List<String> _categories = ['ทั้งหมด'];
+  RealtimeChannel? _cardsChannel;
 
   @override
   void initState() {
     super.initState();
     _loadCards();
+    _subscribeToCards();
   }
 
-  Future<void> _loadCards() async {
+  void _subscribeToCards() {
+    _cardsChannel = supabase
+        .channel('vocab_cards_realtime')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'vocab_cards',
+          callback: (_) => _loadCards(showSpinner: false),
+        )
+        .subscribe();
+  }
+
+  @override
+  void dispose() {
+    _cardsChannel?.unsubscribe();
+    super.dispose();
+  }
+
+  Future<void> _loadCards({bool showSpinner = true}) async {
     try {
-      setState(() {
-        _loading = true;
-        _error = null;
-      });
+      if (showSpinner && mounted) {
+        setState(() {
+          _loading = true;
+          _error = null;
+        });
+      }
       
       final res = await supabase
     .from('vocab_cards')
